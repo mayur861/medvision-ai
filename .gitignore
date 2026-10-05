@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# TensorFlow / ML
+*.h5
+*.keras
+*.ckpt
+*.weights.h5
+
+# Dataset
+data/raw/
+data/processed/
+
+# Generated files
+outputs/uploads/
+outputs/gradcam/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
