@@ -8,7 +8,6 @@ venv/
 
 # TensorFlow / ML
 *.h5
-*.keras
 *.ckpt
 *.weights.h5
 
