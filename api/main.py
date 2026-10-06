@@ -10,16 +10,17 @@ from fastapi.staticfiles import StaticFiles
 
 from PIL import Image
 from io import BytesIO
+
 from tensorflow.keras.models import load_model
 
 
 # =========================================================
-# RUNTIME / MEMORY CONFIG
+# RUNTIME CONFIG
 # =========================================================
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-# Reduce CPU memory pressure on small Render instances
+# Reduce CPU / memory pressure on Render Free
 try:
     tf.config.threading.set_intra_op_parallelism_threads(1)
     tf.config.threading.set_inter_op_parallelism_threads(1)
@@ -84,7 +85,7 @@ app.mount(
 
 
 # =========================================================
-# LOAD MODEL ONCE
+# LOAD MODEL
 # =========================================================
 
 print("Loading DenseNet121 model...")
@@ -104,6 +105,7 @@ print("Model loaded successfully.")
 GRADCAM_LAYER_NAME = "conv5_block16_concat"
 
 try:
+
     gradcam_layer = model.get_layer(
         GRADCAM_LAYER_NAME
     )
@@ -113,6 +115,7 @@ try:
     )
 
 except Exception:
+
     gradcam_layer = None
 
     print(
@@ -121,7 +124,7 @@ except Exception:
 
 
 # =========================================================
-# CREATE GRAD-CAM MODEL ONLY ONCE
+# GRAD-CAM MODEL
 # =========================================================
 
 grad_model = None
@@ -129,6 +132,7 @@ grad_model = None
 if gradcam_layer is not None:
 
     try:
+
         grad_model = tf.keras.models.Model(
             inputs=model.inputs,
             outputs=[
@@ -137,14 +141,16 @@ if gradcam_layer is not None:
             ]
         )
 
-        print("Grad-CAM model created successfully.")
+        print(
+            "Grad-CAM model created successfully."
+        )
 
     except Exception as e:
 
         grad_model = None
 
         print(
-            "Warning: Could not create Grad-CAM model:",
+            "Grad-CAM model creation failed:",
             e
         )
 
@@ -180,19 +186,22 @@ def health():
 
 
 # =========================================================
-# BASIC CHEST X-RAY VALIDATION
+# BASIC X-RAY VALIDATION
 # =========================================================
 
 def is_xray_like(image):
 
     """
-    Basic color-based input guard.
+    Basic input guard.
 
     This is NOT a medical-grade X-ray detector.
     """
 
     img = image.convert("RGB")
-    img = img.resize((128, 128))
+
+    img = img.resize(
+        (128, 128)
+    )
 
     arr = np.asarray(
         img,
@@ -214,6 +223,7 @@ def is_xray_like(image):
     )
 
     if color_score > 0.08:
+
         return False
 
     return True
@@ -245,12 +255,49 @@ def preprocess_image(image_bytes):
 
     # IMPORTANT:
     # Same preprocessing used during training.
-    # No DenseNet preprocess_input here.
+    # No DenseNet preprocess_input.
     return img_array
 
 
 # =========================================================
-# GRAD-CAM
+# SAVE UPLOADED IMAGE
+# =========================================================
+
+def save_uploaded_image(
+    image_bytes,
+    original_filename,
+    request_id
+):
+
+    original_filename = os.path.basename(
+        original_filename or "uploaded_image.png"
+    )
+
+    safe_filename = (
+        request_id
+        + "_"
+        + original_filename
+    )
+
+    save_path = os.path.join(
+        UPLOAD_DIR,
+        safe_filename
+    )
+
+    with open(
+        save_path,
+        "wb"
+    ) as f:
+
+        f.write(
+            image_bytes
+        )
+
+    return safe_filename
+
+
+# =========================================================
+# GRAD-CAM GENERATION
 # =========================================================
 
 def generate_gradcam(
@@ -259,15 +306,20 @@ def generate_gradcam(
 ):
 
     if grad_model is None:
+
         return False
 
-    img = Image.open(
+    # -----------------------------------------
+    # Load image
+    # -----------------------------------------
+
+    original_img = Image.open(
         BytesIO(image_bytes)
     ).convert("RGB")
 
-    original_size = img.size
+    original_size = original_img.size
 
-    img = img.resize(
+    img = original_img.resize(
         IMG_SIZE
     )
 
@@ -280,10 +332,6 @@ def generate_gradcam(
         img_array,
         axis=0
     )
-
-    # -----------------------------------------
-    # Tensor
-    # -----------------------------------------
 
     img_tensor = tf.convert_to_tensor(
         img_array,
@@ -309,6 +357,7 @@ def generate_gradcam(
     )
 
     if grads is None:
+
         return False
 
     # -----------------------------------------
@@ -329,13 +378,17 @@ def generate_gradcam(
     )
 
     # -----------------------------------------
-    # Normalize
+    # ReLU
     # -----------------------------------------
 
     heatmap = tf.maximum(
         heatmap,
         0
     )
+
+    # -----------------------------------------
+    # Normalize
+    # -----------------------------------------
 
     max_value = tf.reduce_max(
         heatmap
@@ -367,7 +420,7 @@ def generate_gradcam(
     )
 
     # -----------------------------------------
-    # Heatmap RGB
+    # Create heatmap
     # -----------------------------------------
 
     heatmap_rgb = np.zeros(
@@ -395,10 +448,6 @@ def generate_gradcam(
     # Overlay
     # -----------------------------------------
 
-    original_img = Image.open(
-        BytesIO(image_bytes)
-    ).convert("RGB")
-
     overlay = Image.blend(
         original_img,
         heatmap_rgb,
@@ -411,7 +460,7 @@ def generate_gradcam(
     )
 
     # -----------------------------------------
-    # Cleanup tensors
+    # Cleanup
     # -----------------------------------------
 
     del img_tensor
@@ -500,10 +549,13 @@ async def predict(
     if not is_xray_like(image):
 
         return {
+
             "success": False,
+
             "error":
                 "This image does not appear to be a chest X-ray. "
                 "Please upload a valid chest X-ray image.",
+
             "error_type":
                 "INVALID_XRAY"
         }
@@ -521,13 +573,15 @@ async def predict(
     except Exception:
 
         return {
+
             "success": False,
+
             "error":
                 "Unable to process the uploaded image."
         }
 
     # =====================================================
-    # PREDICTION
+    # MODEL PREDICTION
     # =====================================================
 
     try:
@@ -550,7 +604,9 @@ async def predict(
     except Exception as e:
 
         return {
+
             "success": False,
+
             "error":
                 f"Model prediction failed: {str(e)}"
         }
@@ -578,84 +634,33 @@ async def predict(
     )
 
     # =====================================================
-    # UNIQUE ID
+    # UNIQUE REQUEST ID
     # =====================================================
 
     request_id = str(
         uuid.uuid4()
     )
 
-    original_filename = os.path.basename(
-        file.filename or "uploaded_image.png"
-    )
-
-    safe_filename = (
-        request_id
-        + "_"
-        + original_filename
-    )
-
     # =====================================================
-    # SAVE UPLOADED IMAGE
+    # SAVE IMAGE
     # =====================================================
-
-    save_path = os.path.join(
-        UPLOAD_DIR,
-        safe_filename
-    )
 
     try:
 
-        with open(
-            save_path,
-            "wb"
-        ) as f:
-
-            f.write(
-                image_bytes
-            )
-
-    except Exception as e:
-
-        print(
-            "Upload save error:",
-            e
-        )
-
-    # =====================================================
-    # GRAD-CAM
-    # =====================================================
-
-    gradcam_filename = (
-        request_id
-        + "_gradcam.png"
-    )
-
-    gradcam_path = os.path.join(
-        GRADCAM_DIR,
-        gradcam_filename
-    )
-
-    gradcam_generated = False
-
-    try:
-
-        gradcam_generated = generate_gradcam(
+        safe_filename = save_uploaded_image(
             image_bytes,
-            gradcam_path
+            file.filename,
+            request_id
         )
 
     except Exception as e:
 
         print(
-            "Grad-CAM error:",
+            "Image save error:",
             e
         )
 
-        gradcam_generated = False
-
-        # Make sure request-level garbage is released
-        gc.collect()
+        safe_filename = None
 
     # =====================================================
     # RESPONSE
@@ -689,24 +694,201 @@ async def predict(
         "task":
             "Chest X-Ray Pneumonia Detection",
 
-        "uploaded_image":
-            f"/uploads/{safe_filename}",
-
-        "gradcam_available":
-            gradcam_generated,
-
         "message":
             "Research/decision-support prediction only. "
-            "Not a clinical diagnosis."
+            "Not a clinical diagnosis.",
+
+        "gradcam_available":
+            grad_model is not None,
+
+        "request_id":
+            request_id
     }
 
-    if gradcam_generated:
+    if safe_filename:
 
-        response["gradcam_image"] = (
-            f"/gradcam/{gradcam_filename}"
+        response["uploaded_image"] = (
+            f"/uploads/{safe_filename}"
         )
 
-    # Final cleanup
+    return response
+
+
+# =========================================================
+# GRAD-CAM API
+# =========================================================
+
+@app.post("/gradcam")
+async def gradcam(
+    file: UploadFile = File(...)
+):
+
+    # =====================================================
+    # FILE EXTENSION
+    # =====================================================
+
+    allowed_extensions = (
+        ".png",
+        ".jpg",
+        ".jpeg"
+    )
+
+    filename = (
+        file.filename or ""
+    ).lower()
+
+    if not filename.endswith(
+        allowed_extensions
+    ):
+
+        return {
+
+            "success": False,
+
+            "error":
+                "Only PNG, JPG and JPEG images are allowed."
+        }
+
+    # =====================================================
+    # CHECK GRAD-CAM
+    # =====================================================
+
+    if grad_model is None:
+
+        return {
+
+            "success": False,
+
+            "error":
+                "Grad-CAM is currently unavailable."
+        }
+
+    # =====================================================
+    # READ IMAGE
+    # =====================================================
+
+    image_bytes = await file.read()
+
+    if not image_bytes:
+
+        return {
+
+            "success": False,
+
+            "error":
+                "Uploaded image is empty."
+        }
+
+    # =====================================================
+    # OPEN IMAGE
+    # =====================================================
+
+    try:
+
+        image = Image.open(
+            BytesIO(image_bytes)
+        )
+
+        image.load()
+
+    except Exception:
+
+        return {
+
+            "success": False,
+
+            "error":
+                "Invalid or corrupted image file."
+        }
+
+    # =====================================================
+    # BASIC X-RAY VALIDATION
+    # =====================================================
+
+    if not is_xray_like(image):
+
+        return {
+
+            "success": False,
+
+            "error":
+                "This image does not appear to be a chest X-ray.",
+
+            "error_type":
+                "INVALID_XRAY"
+        }
+
+    # =====================================================
+    # UNIQUE ID
+    # =====================================================
+
+    request_id = str(
+        uuid.uuid4()
+    )
+
+    gradcam_filename = (
+        request_id
+        + "_gradcam.png"
+    )
+
+    gradcam_path = os.path.join(
+        GRADCAM_DIR,
+        gradcam_filename
+    )
+
+    # =====================================================
+    # GENERATE GRAD-CAM
+    # =====================================================
+
+    try:
+
+        generated = generate_gradcam(
+            image_bytes,
+            gradcam_path
+        )
+
+    except Exception as e:
+
+        print(
+            "Grad-CAM error:",
+            e
+        )
+
+        gc.collect()
+
+        return {
+
+            "success": False,
+
+            "error":
+                "Grad-CAM generation failed."
+        }
+
+    # =====================================================
+    # RESPONSE
+    # =====================================================
+
+    if not generated:
+
+        return {
+
+            "success": False,
+
+            "error":
+                "Grad-CAM could not be generated."
+        }
+
     gc.collect()
 
-    return response
+    return {
+
+        "success": True,
+
+        "gradcam_available": True,
+
+        "gradcam_image":
+            f"/gradcam/{gradcam_filename}",
+
+        "message":
+            "Grad-CAM visualization generated successfully."
+    }

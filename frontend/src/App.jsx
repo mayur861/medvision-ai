@@ -1,13 +1,14 @@
 import { useState } from "react";
 import "./App.css";
 
-const API_URL = "https://medvision-ai-he2k.onrender.com";
+const API_URL = "http://127.0.0.1:8000";;
 
 function App() {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [gradcamLoading, setGradcamLoading] = useState(false);
   const [error, setError] = useState("");
 
   const handleFileChange = (event) => {
@@ -44,12 +45,24 @@ function App() {
     formData.append("file", file);
 
     try {
+      // =====================================================
+      // STEP 1: PREDICTION
+      // =====================================================
+
       const response = await fetch(`${API_URL}/predict`, {
         method: "POST",
         body: formData,
       });
 
-      const data = await response.json();
+      let data;
+
+      try {
+        data = await response.json();
+      } catch {
+        throw new Error(
+          "The AI server returned an invalid response."
+        );
+      }
 
       if (!response.ok || !data.success) {
         throw new Error(
@@ -57,13 +70,78 @@ function App() {
         );
       }
 
+      // Show prediction immediately
       setResult(data);
+
+      // =====================================================
+      // STEP 2: GRAD-CAM
+      // =====================================================
+
+      setGradcamLoading(true);
+
+      try {
+        const gradcamFormData = new FormData();
+        gradcamFormData.append("file", file);
+
+        const gradcamResponse = await fetch(
+          `${API_URL}/gradcam`,
+          {
+            method: "POST",
+            body: gradcamFormData,
+          }
+        );
+
+        let gradcamData;
+
+        try {
+          gradcamData = await gradcamResponse.json();
+        } catch {
+          gradcamData = null;
+        }
+
+        if (
+          gradcamResponse.ok &&
+          gradcamData &&
+          gradcamData.success &&
+          gradcamData.gradcam_image
+        ) {
+          setResult((previousResult) => ({
+            ...previousResult,
+            gradcam_available: true,
+            gradcam_image: gradcamData.gradcam_image,
+          }));
+        } else {
+          // Prediction is still valid even if Grad-CAM fails
+          setResult((previousResult) => ({
+            ...previousResult,
+            gradcam_available: false,
+          }));
+        }
+      } catch (gradcamError) {
+        console.log(
+          "Grad-CAM unavailable:",
+          gradcamError
+        );
+
+        // Do not fail the prediction because Grad-CAM failed
+        setResult((previousResult) => ({
+          ...previousResult,
+          gradcam_available: false,
+        }));
+      } finally {
+        setGradcamLoading(false);
+      }
     } catch (err) {
-      if (err.message.includes("chest X-ray")) {
+      console.error("Prediction error:", err);
+
+      if (
+        err.message &&
+        err.message.toLowerCase().includes("chest x-ray")
+      ) {
         setError(err.message);
       } else {
         setError(
-          "Unable to connect to the AI server. Make sure FastAPI is running on port 8000."
+          "Unable to connect to the AI server. Please try again in a few moments."
         );
       }
     } finally {
@@ -76,6 +154,7 @@ function App() {
     setPreview(null);
     setResult(null);
     setError("");
+    setGradcamLoading(false);
   };
 
   return (
@@ -114,7 +193,9 @@ function App() {
 
       <main className="container">
 
-        {/* HERO */}
+        {/* =====================================================
+            HERO
+        ====================================================== */}
 
         <section className="hero">
 
@@ -166,7 +247,9 @@ function App() {
             </div>
 
 
-            {/* NO IMAGE */}
+            {/* =================================================
+                NO IMAGE
+            ================================================== */}
 
             {!preview ? (
 
@@ -200,7 +283,9 @@ function App() {
 
             ) : (
 
-              /* IMAGE PREVIEW */
+              /* =================================================
+                 IMAGE PREVIEW
+              ================================================== */
 
               <div className="preview-area">
 
@@ -233,7 +318,9 @@ function App() {
             )}
 
 
-            {/* ANALYZE BUTTON */}
+            {/* =================================================
+                ANALYZE BUTTON
+            ================================================== */}
 
             {preview && (
 
@@ -263,7 +350,9 @@ function App() {
             )}
 
 
-            {/* ERROR */}
+            {/* =================================================
+                ERROR
+            ================================================== */}
 
             {error && (
 
@@ -310,7 +399,9 @@ function App() {
             </div>
 
 
-            {/* EMPTY RESULT */}
+            {/* =================================================
+                EMPTY RESULT
+            ================================================== */}
 
             {!result ? (
 
@@ -344,7 +435,9 @@ function App() {
               <div className="result-content">
 
 
-                {/* PREDICTION */}
+                {/* =================================================
+                    PREDICTION
+                ================================================== */}
 
                 <div
                   className={`prediction ${
@@ -365,7 +458,9 @@ function App() {
                 </div>
 
 
-                {/* PROBABILITY */}
+                {/* =================================================
+                    PROBABILITY
+                ================================================== */}
 
                 <div className="probability-section">
 
@@ -395,7 +490,9 @@ function App() {
                 </div>
 
 
-                {/* CONFIDENCE */}
+                {/* =================================================
+                    CONFIDENCE
+                ================================================== */}
 
                 <div className="confidence-box">
 
@@ -410,7 +507,9 @@ function App() {
                 </div>
 
 
-                {/* MODEL INFORMATION */}
+                {/* =================================================
+                    MODEL INFORMATION
+                ================================================== */}
 
                 <div className="model-info">
 
@@ -439,6 +538,49 @@ function App() {
                   </div>
 
                 </div>
+
+
+                {/* =================================================
+                    GRAD-CAM LOADING
+                ================================================== */}
+
+                {gradcamLoading && (
+
+                  <div className="explanation-section">
+
+                    <div className="explanation-heading">
+
+                      <div>
+
+                        <h3>
+                          Explainable AI
+                        </h3>
+
+                        <p>
+                          Generating Grad-CAM visualization...
+                        </p>
+
+                      </div>
+
+                      <span className="xai-badge">
+                        XAI
+                      </span>
+
+                    </div>
+
+                    <div className="gradcam-loading">
+
+                      <span className="spinner"></span>
+
+                      <span>
+                        Generating explanation...
+                      </span>
+
+                    </div>
+
+                  </div>
+
+                )}
 
 
                 {/* =================================================
@@ -496,7 +638,9 @@ function App() {
                   )}
 
 
-                {/* DISCLAIMER */}
+                {/* =================================================
+                    DISCLAIMER
+                ================================================== */}
 
                 <div className="disclaimer">
 
@@ -521,223 +665,347 @@ function App() {
 
         </section>
 
+
         {/* =====================================================
-    MODEL PERFORMANCE
-====================================================== */}
+            MODEL PERFORMANCE
+        ====================================================== */}
 
-<section className="performance-section">
+        <section className="performance-section">
 
-  <div className="performance-header">
-    <div>
-      <div className="hero-badge">MODEL EVALUATION</div>
+          <div className="performance-header">
 
-      <h2>Model Performance</h2>
+            <div>
 
-      <p>
-        Evaluation results on the held-out test dataset.
-      </p>
-    </div>
+              <div className="hero-badge">
+                MODEL EVALUATION
+              </div>
 
-    <div className="evaluation-badge">
-      Test Set
-    </div>
-  </div>
+              <h2>
+                Model Performance
+              </h2>
 
+              <p>
+                Evaluation results on the held-out test dataset.
+              </p>
 
-  {/* METRICS */}
+            </div>
 
-  <div className="metrics-grid">
+            <div className="evaluation-badge">
+              Test Set
+            </div>
 
-    <div className="metric-card">
-      <span className="metric-label">Accuracy</span>
-      <strong>82%</strong>
-      <small>Overall correctness</small>
-    </div>
-
-    <div className="metric-card">
-      <span className="metric-label">Precision</span>
-      <strong>65%</strong>
-      <small>Pneumonia precision</small>
-    </div>
-
-    <div className="metric-card">
-      <span className="metric-label">Recall</span>
-      <strong>45%</strong>
-      <small>Pneumonia recall</small>
-    </div>
-
-    <div className="metric-card">
-      <span className="metric-label">F1 Score</span>
-      <strong>53%</strong>
-      <small>Precision-recall balance</small>
-    </div>
-
-    <div className="metric-card metric-highlight">
-      <span className="metric-label">ROC-AUC</span>
-      <strong>83.76%</strong>
-      <small>Ranking performance</small>
-    </div>
-
-  </div>
-
-
-  {/* EVALUATION DETAILS */}
-
-  <div className="evaluation-grid">
-
-    {/* CONFUSION MATRIX */}
-
-    <div className="evaluation-card">
-
-      <div className="evaluation-card-header">
-
-        <div>
-          <h3>Confusion Matrix</h3>
-
-          <p>
-            Test-set classification results
-          </p>
-        </div>
-
-        <span>2,669 samples</span>
-
-      </div>
-
-
-      <div className="matrix-wrapper">
-
-        <div className="matrix-axis-label predicted">
-          Predicted
-        </div>
-
-        <div className="matrix">
-
-          <div></div>
-
-          <div className="matrix-label">
-            NORMAL
-          </div>
-
-          <div className="matrix-label">
-            PNEUMONIA
           </div>
 
 
-          <div className="matrix-label vertical">
-            NORMAL
+          {/* METRICS */}
+
+          <div className="metrics-grid">
+
+            <div className="metric-card">
+              <span className="metric-label">
+                Accuracy
+              </span>
+
+              <strong>
+                82%
+              </strong>
+
+              <small>
+                Overall correctness
+              </small>
+            </div>
+
+            <div className="metric-card">
+              <span className="metric-label">
+                Precision
+              </span>
+
+              <strong>
+                65%
+              </strong>
+
+              <small>
+                Pneumonia precision
+              </small>
+            </div>
+
+            <div className="metric-card">
+              <span className="metric-label">
+                Recall
+              </span>
+
+              <strong>
+                45%
+              </strong>
+
+              <small>
+                Pneumonia recall
+              </small>
+            </div>
+
+            <div className="metric-card">
+              <span className="metric-label">
+                F1 Score
+              </span>
+
+              <strong>
+                53%
+              </strong>
+
+              <small>
+                Precision-recall balance
+              </small>
+            </div>
+
+            <div className="metric-card metric-highlight">
+
+              <span className="metric-label">
+                ROC-AUC
+              </span>
+
+              <strong>
+                83.76%
+              </strong>
+
+              <small>
+                Ranking performance
+              </small>
+
+            </div>
+
           </div>
 
-          <div className="matrix-cell correct">
-            <strong>1921</strong>
-            <span>True Negative</span>
+
+          {/* EVALUATION DETAILS */}
+
+          <div className="evaluation-grid">
+
+            {/* CONFUSION MATRIX */}
+
+            <div className="evaluation-card">
+
+              <div className="evaluation-card-header">
+
+                <div>
+
+                  <h3>
+                    Confusion Matrix
+                  </h3>
+
+                  <p>
+                    Test-set classification results
+                  </p>
+
+                </div>
+
+                <span>
+                  2,669 samples
+                </span>
+
+              </div>
+
+
+              <div className="matrix-wrapper">
+
+                <div className="matrix-axis-label predicted">
+                  Predicted
+                </div>
+
+                <div className="matrix">
+
+                  <div></div>
+
+                  <div className="matrix-label">
+                    NORMAL
+                  </div>
+
+                  <div className="matrix-label">
+                    PNEUMONIA
+                  </div>
+
+
+                  <div className="matrix-label vertical">
+                    NORMAL
+                  </div>
+
+                  <div className="matrix-cell correct">
+
+                    <strong>
+                      1921
+                    </strong>
+
+                    <span>
+                      True Negative
+                    </span>
+
+                  </div>
+
+                  <div className="matrix-cell incorrect">
+
+                    <strong>
+                      147
+                    </strong>
+
+                    <span>
+                      False Positive
+                    </span>
+
+                  </div>
+
+
+                  <div className="matrix-label vertical">
+                    PNEUMONIA
+                  </div>
+
+                  <div className="matrix-cell incorrect">
+
+                    <strong>
+                      330
+                    </strong>
+
+                    <span>
+                      False Negative
+                    </span>
+
+                  </div>
+
+                  <div className="matrix-cell correct">
+
+                    <strong>
+                      271
+                    </strong>
+
+                    <span>
+                      True Positive
+                    </span>
+
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+
+            {/* MODEL DETAILS */}
+
+            <div className="evaluation-card">
+
+              <div className="evaluation-card-header">
+
+                <div>
+
+                  <h3>
+                    Model Details
+                  </h3>
+
+                  <p>
+                    Architecture and evaluation setup
+                  </p>
+
+                </div>
+
+              </div>
+
+
+              <div className="details-list">
+
+                <div>
+                  <span>
+                    Architecture
+                  </span>
+
+                  <strong>
+                    DenseNet121
+                  </strong>
+                </div>
+
+                <div>
+                  <span>
+                    Learning Approach
+                  </span>
+
+                  <strong>
+                    Transfer Learning
+                  </strong>
+                </div>
+
+                <div>
+                  <span>
+                    Input Size
+                  </span>
+
+                  <strong>
+                    224 × 224 × 3
+                  </strong>
+                </div>
+
+                <div>
+                  <span>
+                    Output
+                  </span>
+
+                  <strong>
+                    Binary Classification
+                  </strong>
+                </div>
+
+                <div>
+                  <span>
+                    Classes
+                  </span>
+
+                  <strong>
+                    NORMAL / PNEUMONIA
+                  </strong>
+                </div>
+
+                <div>
+                  <span>
+                    Evaluation Samples
+                  </span>
+
+                  <strong>
+                    2,669
+                  </strong>
+                </div>
+
+              </div>
+
+            </div>
+
           </div>
 
-          <div className="matrix-cell incorrect">
-            <strong>147</strong>
-            <span>False Positive</span>
+
+          {/* INTERPRETATION */}
+
+          <div className="performance-note">
+
+            <div className="performance-note-icon">
+              i
+            </div>
+
+            <div>
+
+              <strong>
+                Performance Interpretation
+              </strong>
+
+              <p>
+                The model achieved an ROC-AUC of 83.76% on the
+                held-out test set. Recall for the pneumonia class
+                was 45%, meaning some pneumonia cases were not
+                detected. These results demonstrate the research
+                prototype's performance but do not establish
+                clinical effectiveness.
+              </p>
+
+            </div>
+
           </div>
 
-
-          <div className="matrix-label vertical">
-            PNEUMONIA
-          </div>
-
-          <div className="matrix-cell incorrect">
-            <strong>330</strong>
-            <span>False Negative</span>
-          </div>
-
-          <div className="matrix-cell correct">
-            <strong>271</strong>
-            <span>True Positive</span>
-          </div>
-
-        </div>
-
-      </div>
-
-    </div>
-
-
-    {/* MODEL DETAILS */}
-
-    <div className="evaluation-card">
-
-      <div className="evaluation-card-header">
-
-        <div>
-          <h3>Model Details</h3>
-
-          <p>
-            Architecture and evaluation setup
-          </p>
-        </div>
-
-      </div>
-
-
-      <div className="details-list">
-
-        <div>
-          <span>Architecture</span>
-          <strong>DenseNet121</strong>
-        </div>
-
-        <div>
-          <span>Learning Approach</span>
-          <strong>Transfer Learning</strong>
-        </div>
-
-        <div>
-          <span>Input Size</span>
-          <strong>224 × 224 × 3</strong>
-        </div>
-
-        <div>
-          <span>Output</span>
-          <strong>Binary Classification</strong>
-        </div>
-
-        <div>
-          <span>Classes</span>
-          <strong>NORMAL / PNEUMONIA</strong>
-        </div>
-
-        <div>
-          <span>Evaluation Samples</span>
-          <strong>2,669</strong>
-        </div>
-
-      </div>
-
-    </div>
-
-  </div>
-
-
-  {/* INTERPRETATION */}
-
-  <div className="performance-note">
-
-    <div className="performance-note-icon">
-      i
-    </div>
-
-    <div>
-      <strong>Performance Interpretation</strong>
-
-      <p>
-        The model achieved an ROC-AUC of 83.76% on the held-out
-        test set. Recall for the pneumonia class was 45%, meaning
-        some pneumonia cases were not detected. These results
-        demonstrate the research prototype's performance but do
-        not establish clinical effectiveness.
-      </p>
-    </div>
-
-  </div>
-
-</section>
+        </section>
 
 
         {/* =====================================================
