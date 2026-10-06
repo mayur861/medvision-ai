@@ -1,7 +1,7 @@
 import { useState } from "react";
 import "./App.css";
 
-const API_URL = "http://127.0.0.1:8000";;
+const API_URL = "http://127.0.0.1:8000";
 
 function App() {
   const [file, setFile] = useState(null);
@@ -29,6 +29,7 @@ function App() {
     setPreview(URL.createObjectURL(selectedFile));
     setResult(null);
     setError("");
+    setGradcamLoading(false);
   };
 
   const analyzeImage = async () => {
@@ -40,112 +41,164 @@ function App() {
     setLoading(true);
     setError("");
     setResult(null);
+    setGradcamLoading(false);
 
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      // =====================================================
-      // STEP 1: PREDICTION
-      // =====================================================
+      console.log("Sending prediction request...");
 
-      const response = await fetch(`${API_URL}/predict`, {
-        method: "POST",
-        body: formData,
-      });
+      const response = await fetch(
+        `${API_URL}/predict`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
 
-      let data;
+      console.log(
+        "Prediction HTTP status:",
+        response.status
+      );
 
-      try {
-        data = await response.json();
-      } catch {
-        throw new Error(
-          "The AI server returned an invalid response."
-        );
-      }
+      const data = await response.json();
+
+      console.log(
+        "Prediction response:",
+        data
+      );
 
       if (!response.ok || !data.success) {
         throw new Error(
-          data.error || "Prediction failed."
+          data.error ||
+          data.details ||
+          "Prediction failed."
         );
       }
 
-      // Show prediction immediately
+      // ------------------------------------------------
+      // SHOW PREDICTION
+      // ------------------------------------------------
+
       setResult(data);
+      setLoading(false);
 
-      // =====================================================
-      // STEP 2: GRAD-CAM
-      // =====================================================
+      // ------------------------------------------------
+      // GENERATE GRAD-CAM
+      // ------------------------------------------------
 
-      setGradcamLoading(true);
-
-      try {
-        const gradcamFormData = new FormData();
-        gradcamFormData.append("file", file);
-
-        const gradcamResponse = await fetch(
-          `${API_URL}/gradcam`,
-          {
-            method: "POST",
-            body: gradcamFormData,
-          }
-        );
-
-        let gradcamData;
+      if (data.gradcam_available !== false) {
+        setGradcamLoading(true);
 
         try {
-          gradcamData = await gradcamResponse.json();
-        } catch {
-          gradcamData = null;
-        }
+          console.log(
+            "Sending Grad-CAM request..."
+          );
 
-        if (
-          gradcamResponse.ok &&
-          gradcamData &&
-          gradcamData.success &&
-          gradcamData.gradcam_image
-        ) {
-          setResult((previousResult) => ({
-            ...previousResult,
-            gradcam_available: true,
-            gradcam_image: gradcamData.gradcam_image,
-          }));
-        } else {
-          // Prediction is still valid even if Grad-CAM fails
-          setResult((previousResult) => ({
-            ...previousResult,
-            gradcam_available: false,
-          }));
-        }
-      } catch (gradcamError) {
-        console.log(
-          "Grad-CAM unavailable:",
-          gradcamError
-        );
+          const gradcamFormData =
+            new FormData();
 
-        // Do not fail the prediction because Grad-CAM failed
-        setResult((previousResult) => ({
-          ...previousResult,
-          gradcam_available: false,
-        }));
-      } finally {
-        setGradcamLoading(false);
+          gradcamFormData.append(
+            "file",
+            file
+          );
+
+          const gradcamResponse =
+            await fetch(
+              `${API_URL}/gradcam`,
+              {
+                method: "POST",
+                body: gradcamFormData,
+              }
+            );
+
+          console.log(
+            "Grad-CAM HTTP status:",
+            gradcamResponse.status
+          );
+
+          const gradcamData =
+            await gradcamResponse.json();
+
+          console.log(
+            "Grad-CAM response:",
+            gradcamData
+          );
+
+          if (
+            gradcamResponse.ok &&
+            gradcamData.success &&
+            gradcamData.gradcam_image
+          ) {
+            setResult(
+              (previousResult) => ({
+                ...previousResult,
+
+                gradcam_available: true,
+
+                gradcam_image:
+                  gradcamData.gradcam_image,
+              })
+            );
+          } else {
+            console.error(
+              "Grad-CAM generation failed:",
+              gradcamData
+            );
+
+            setResult(
+              (previousResult) => ({
+                ...previousResult,
+
+                gradcam_available: false,
+              })
+            );
+          }
+
+        } catch (gradcamError) {
+
+          console.error(
+            "Grad-CAM error:",
+            gradcamError
+          );
+
+          setResult(
+            (previousResult) => ({
+              ...previousResult,
+
+              gradcam_available: false,
+            })
+          );
+
+        } finally {
+          setGradcamLoading(false);
+        }
       }
+
     } catch (err) {
-      console.error("Prediction error:", err);
+
+      console.error(
+        "Prediction error:",
+        err
+      );
+
+      setLoading(false);
+      setGradcamLoading(false);
 
       if (
         err.message &&
-        err.message.toLowerCase().includes("chest x-ray")
+        err.message.includes(
+          "chest X-ray"
+        )
       ) {
         setError(err.message);
       } else {
         setError(
-          "Unable to connect to the AI server. Please try again in a few moments."
+          err.message ||
+          "Unable to connect to the AI server. Make sure FastAPI is running on port 8000."
         );
       }
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -193,9 +246,7 @@ function App() {
 
       <main className="container">
 
-        {/* =====================================================
-            HERO
-        ====================================================== */}
+        {/* HERO */}
 
         <section className="hero">
 
@@ -247,9 +298,7 @@ function App() {
             </div>
 
 
-            {/* =================================================
-                NO IMAGE
-            ================================================== */}
+            {/* NO IMAGE */}
 
             {!preview ? (
 
@@ -283,9 +332,7 @@ function App() {
 
             ) : (
 
-              /* =================================================
-                 IMAGE PREVIEW
-              ================================================== */
+              /* IMAGE PREVIEW */
 
               <div className="preview-area">
 
@@ -318,16 +365,17 @@ function App() {
             )}
 
 
-            {/* =================================================
-                ANALYZE BUTTON
-            ================================================== */}
+            {/* ANALYZE BUTTON */}
 
             {preview && (
 
               <button
                 className="analyze-button"
                 onClick={analyzeImage}
-                disabled={loading}
+                disabled={
+                  loading ||
+                  gradcamLoading
+                }
               >
 
                 {loading ? (
@@ -335,6 +383,13 @@ function App() {
                   <>
                     <span className="spinner"></span>
                     Analyzing X-Ray...
+                  </>
+
+                ) : gradcamLoading ? (
+
+                  <>
+                    <span className="spinner"></span>
+                    Generating Explanation...
                   </>
 
                 ) : (
@@ -350,9 +405,7 @@ function App() {
             )}
 
 
-            {/* =================================================
-                ERROR
-            ================================================== */}
+            {/* ERROR */}
 
             {error && (
 
@@ -399,9 +452,7 @@ function App() {
             </div>
 
 
-            {/* =================================================
-                EMPTY RESULT
-            ================================================== */}
+            {/* EMPTY RESULT */}
 
             {!result ? (
 
@@ -435,9 +486,7 @@ function App() {
               <div className="result-content">
 
 
-                {/* =================================================
-                    PREDICTION
-                ================================================== */}
+                {/* PREDICTION */}
 
                 <div
                   className={`prediction ${
@@ -458,9 +507,7 @@ function App() {
                 </div>
 
 
-                {/* =================================================
-                    PROBABILITY
-                ================================================== */}
+                {/* PROBABILITY */}
 
                 <div className="probability-section">
 
@@ -490,9 +537,7 @@ function App() {
                 </div>
 
 
-                {/* =================================================
-                    CONFIDENCE
-                ================================================== */}
+                {/* CONFIDENCE */}
 
                 <div className="confidence-box">
 
@@ -507,9 +552,7 @@ function App() {
                 </div>
 
 
-                {/* =================================================
-                    MODEL INFORMATION
-                ================================================== */}
+                {/* MODEL INFORMATION */}
 
                 <div className="model-info">
 
@@ -541,7 +584,7 @@ function App() {
 
 
                 {/* =================================================
-                    GRAD-CAM LOADING
+                    GRAD-CAM / EXPLAINABLE AI
                 ================================================== */}
 
                 {gradcamLoading && (
@@ -568,13 +611,14 @@ function App() {
 
                     </div>
 
-                    <div className="gradcam-loading">
+                    <div className="gradcam-loading-box">
 
                       <span className="spinner"></span>
 
-                      <span>
-                        Generating explanation...
-                      </span>
+                      <p>
+                        Creating visual explanation of
+                        important image regions...
+                      </p>
 
                     </div>
 
@@ -582,10 +626,6 @@ function App() {
 
                 )}
 
-
-                {/* =================================================
-                    IMAGE EXPLANATION
-                ================================================== */}
 
                 {result.gradcam_available &&
                   result.gradcam_image && (
@@ -638,9 +678,45 @@ function App() {
                   )}
 
 
-                {/* =================================================
-                    DISCLAIMER
-                ================================================== */}
+                {!gradcamLoading &&
+                  result.gradcam_available === false && (
+
+                    <div className="explanation-section">
+
+                      <div className="explanation-heading">
+
+                        <div>
+
+                          <h3>
+                            Explainable AI
+                          </h3>
+
+                          <p>
+                            Grad-CAM visualization
+                          </p>
+
+                        </div>
+
+                        <span className="xai-badge">
+                          XAI
+                        </span>
+
+                      </div>
+
+                      <p className="gradcam-description">
+
+                        Prediction completed successfully,
+                        but the Grad-CAM visualization could
+                        not be generated.
+
+                      </p>
+
+                    </div>
+
+                  )}
+
+
+                {/* DISCLAIMER */}
 
                 <div className="disclaimer">
 
@@ -758,7 +834,6 @@ function App() {
             </div>
 
             <div className="metric-card metric-highlight">
-
               <span className="metric-label">
                 ROC-AUC
               </span>
@@ -770,7 +845,6 @@ function App() {
               <small>
                 Ranking performance
               </small>
-
             </div>
 
           </div>
@@ -829,7 +903,6 @@ function App() {
                   </div>
 
                   <div className="matrix-cell correct">
-
                     <strong>
                       1921
                     </strong>
@@ -837,11 +910,9 @@ function App() {
                     <span>
                       True Negative
                     </span>
-
                   </div>
 
                   <div className="matrix-cell incorrect">
-
                     <strong>
                       147
                     </strong>
@@ -849,7 +920,6 @@ function App() {
                     <span>
                       False Positive
                     </span>
-
                   </div>
 
 
@@ -858,7 +928,6 @@ function App() {
                   </div>
 
                   <div className="matrix-cell incorrect">
-
                     <strong>
                       330
                     </strong>
@@ -866,11 +935,9 @@ function App() {
                     <span>
                       False Negative
                     </span>
-
                   </div>
 
                   <div className="matrix-cell correct">
-
                     <strong>
                       271
                     </strong>
@@ -878,7 +945,6 @@ function App() {
                     <span>
                       True Positive
                     </span>
-
                   </div>
 
                 </div>
@@ -993,12 +1059,11 @@ function App() {
               </strong>
 
               <p>
-                The model achieved an ROC-AUC of 83.76% on the
-                held-out test set. Recall for the pneumonia class
-                was 45%, meaning some pneumonia cases were not
-                detected. These results demonstrate the research
-                prototype's performance but do not establish
-                clinical effectiveness.
+                The model achieved an ROC-AUC of 83.76% on the held-out
+                test set. Recall for the pneumonia class was 45%, meaning
+                some pneumonia cases were not detected. These results
+                demonstrate the research prototype's performance but do
+                not establish clinical effectiveness.
               </p>
 
             </div>
