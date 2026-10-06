@@ -1,5 +1,6 @@
 import os
 import uuid
+import gc
 import numpy as np
 import tensorflow as tf
 
@@ -9,8 +10,21 @@ from fastapi.staticfiles import StaticFiles
 
 from PIL import Image
 from io import BytesIO
-
 from tensorflow.keras.models import load_model
+
+
+# =========================================================
+# RUNTIME / MEMORY CONFIG
+# =========================================================
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+# Reduce CPU memory pressure on small Render instances
+try:
+    tf.config.threading.set_intra_op_parallelism_threads(1)
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+except Exception:
+    pass
 
 
 # =========================================================
@@ -70,7 +84,7 @@ app.mount(
 
 
 # =========================================================
-# LOAD MODEL
+# LOAD MODEL ONCE
 # =========================================================
 
 print("Loading DenseNet121 model...")
@@ -84,13 +98,12 @@ print("Model loaded successfully.")
 
 
 # =========================================================
-# FIND GRAD-CAM LAYER
+# GRAD-CAM LAYER
 # =========================================================
 
 GRADCAM_LAYER_NAME = "conv5_block16_concat"
 
 try:
-
     gradcam_layer = model.get_layer(
         GRADCAM_LAYER_NAME
     )
@@ -100,12 +113,40 @@ try:
     )
 
 except Exception:
-
     gradcam_layer = None
 
     print(
         "Warning: Grad-CAM layer not found."
     )
+
+
+# =========================================================
+# CREATE GRAD-CAM MODEL ONLY ONCE
+# =========================================================
+
+grad_model = None
+
+if gradcam_layer is not None:
+
+    try:
+        grad_model = tf.keras.models.Model(
+            inputs=model.inputs,
+            outputs=[
+                gradcam_layer.output,
+                model.output
+            ]
+        )
+
+        print("Grad-CAM model created successfully.")
+
+    except Exception as e:
+
+        grad_model = None
+
+        print(
+            "Warning: Could not create Grad-CAM model:",
+            e
+        )
 
 
 # =========================================================
@@ -120,7 +161,7 @@ def home():
         "status": "running",
         "model": "DenseNet121",
         "task": "Pneumonia Detection",
-        "gradcam": gradcam_layer is not None
+        "gradcam": grad_model is not None
     }
 
 
@@ -133,37 +174,29 @@ def health():
 
     return {
         "status": "healthy",
-        "model_loaded": True,
-        "gradcam_available": gradcam_layer is not None
+        "model_loaded": model is not None,
+        "gradcam_available": grad_model is not None
     }
 
 
 # =========================================================
-# BASIC CHEST X-RAY INPUT VALIDATION
+# BASIC CHEST X-RAY VALIDATION
 # =========================================================
 
 def is_xray_like(image):
+
     """
-    Basic input guard.
+    Basic color-based input guard.
 
-    Chest X-rays are generally grayscale.
-    This rejects obviously colorful images such as
-    normal mobile photos.
-
-    NOTE:
     This is NOT a medical-grade X-ray detector.
     """
 
     img = image.convert("RGB")
-
-    img = img.resize(
-        (128, 128)
-    )
+    img = img.resize((128, 128))
 
     arr = np.asarray(
-        img
-    ).astype(
-        np.float32
+        img,
+        dtype=np.float32
     ) / 255.0
 
     r = arr[:, :, 0]
@@ -180,9 +213,7 @@ def is_xray_like(image):
         np.mean(channel_difference)
     )
 
-    # Very colorful images are unlikely to be chest X-rays.
     if color_score > 0.08:
-
         return False
 
     return True
@@ -192,26 +223,19 @@ def is_xray_like(image):
 # IMAGE PREPROCESSING
 # =========================================================
 
-def preprocess_image(
-    image_bytes
-):
+def preprocess_image(image_bytes):
 
     img = Image.open(
         BytesIO(image_bytes)
-    )
-
-    img = img.convert(
-        "RGB"
-    )
+    ).convert("RGB")
 
     img = img.resize(
         IMG_SIZE
     )
 
-    img_array = np.array(
-        img
-    ).astype(
-        np.float32
+    img_array = np.asarray(
+        img,
+        dtype=np.float32
     )
 
     img_array = np.expand_dims(
@@ -220,10 +244,8 @@ def preprocess_image(
     )
 
     # IMPORTANT:
-    # Your model was trained using image_dataset_from_directory
-    # without DenseNet preprocess_input.
-    #
-    # Therefore we keep the same preprocessing here.
+    # Same preprocessing used during training.
+    # No DenseNet preprocess_input here.
     return img_array
 
 
@@ -236,30 +258,22 @@ def generate_gradcam(
     output_path
 ):
 
-    if gradcam_layer is None:
-
+    if grad_model is None:
         return False
-
-    # -----------------------------------------
-    # Load image
-    # -----------------------------------------
 
     img = Image.open(
         BytesIO(image_bytes)
-    ).convert(
-        "RGB"
-    )
+    ).convert("RGB")
 
-    original_img = img.copy()
+    original_size = img.size
 
     img = img.resize(
         IMG_SIZE
     )
 
-    img_array = np.array(
-        img
-    ).astype(
-        np.float32
+    img_array = np.asarray(
+        img,
+        dtype=np.float32
     )
 
     img_array = np.expand_dims(
@@ -267,21 +281,13 @@ def generate_gradcam(
         axis=0
     )
 
-    # Same preprocessing as training
+    # -----------------------------------------
+    # Tensor
+    # -----------------------------------------
+
     img_tensor = tf.convert_to_tensor(
-        img_array
-    )
-
-    # -----------------------------------------
-    # Grad-CAM model
-    # -----------------------------------------
-
-    grad_model = tf.keras.models.Model(
-        inputs=model.inputs,
-        outputs=[
-            gradcam_layer.output,
-            model.output
-        ]
+        img_array,
+        dtype=tf.float32
     )
 
     # -----------------------------------------
@@ -302,6 +308,9 @@ def generate_gradcam(
         conv_outputs
     )
 
+    if grads is None:
+        return False
+
     # -----------------------------------------
     # Global average pooling
     # -----------------------------------------
@@ -312,7 +321,6 @@ def generate_gradcam(
     )
 
     conv_outputs = conv_outputs[0]
-
     pooled_grads = pooled_grads[0]
 
     heatmap = tf.reduce_sum(
@@ -321,7 +329,7 @@ def generate_gradcam(
     )
 
     # -----------------------------------------
-    # Normalize heatmap
+    # Normalize
     # -----------------------------------------
 
     heatmap = tf.maximum(
@@ -350,18 +358,18 @@ def generate_gradcam(
     )
 
     heatmap_img = heatmap_img.resize(
-        original_img.size
+        original_size
     )
-
-    # -----------------------------------------
-    # Convert heatmap to RGB
-    # -----------------------------------------
 
     heatmap_array = np.asarray(
-        heatmap_img
+        heatmap_img,
+        dtype=np.uint8
     )
 
-    # Create simple red-yellow heatmap
+    # -----------------------------------------
+    # Heatmap RGB
+    # -----------------------------------------
+
     heatmap_rgb = np.zeros(
         (
             heatmap_array.shape[0],
@@ -375,9 +383,7 @@ def generate_gradcam(
 
     heatmap_rgb[:, :, 1] = (
         heatmap_array * 0.5
-    ).astype(
-        np.uint8
-    )
+    ).astype(np.uint8)
 
     heatmap_rgb[:, :, 2] = 0
 
@@ -389,9 +395,9 @@ def generate_gradcam(
     # Overlay
     # -----------------------------------------
 
-    original_img = original_img.convert(
-        "RGB"
-    )
+    original_img = Image.open(
+        BytesIO(image_bytes)
+    ).convert("RGB")
 
     overlay = Image.blend(
         original_img,
@@ -400,8 +406,22 @@ def generate_gradcam(
     )
 
     overlay.save(
-        output_path
+        output_path,
+        format="PNG"
     )
+
+    # -----------------------------------------
+    # Cleanup tensors
+    # -----------------------------------------
+
+    del img_tensor
+    del img_array
+    del conv_outputs
+    del pooled_grads
+    del grads
+    del heatmap
+
+    gc.collect()
 
     return True
 
@@ -416,31 +436,31 @@ async def predict(
 ):
 
     # =====================================================
-    # VALIDATE FILE EXTENSION
+    # FILE EXTENSION
     # =====================================================
 
-    allowed_extensions = [
+    allowed_extensions = (
         ".png",
         ".jpg",
         ".jpeg"
-    ]
+    )
 
     filename = (
         file.filename or ""
     ).lower()
 
-    if not any(
-        filename.endswith(ext)
-        for ext in allowed_extensions
+    if not filename.endswith(
+        allowed_extensions
     ):
 
         return {
             "success": False,
-            "error": "Only PNG, JPG and JPEG images are allowed."
+            "error":
+                "Only PNG, JPG and JPEG images are allowed."
         }
 
     # =====================================================
-    # READ IMAGE
+    # READ FILE
     # =====================================================
 
     image_bytes = await file.read()
@@ -449,7 +469,8 @@ async def predict(
 
         return {
             "success": False,
-            "error": "Uploaded image is empty."
+            "error":
+                "Uploaded image is empty."
         }
 
     # =====================================================
@@ -468,7 +489,8 @@ async def predict(
 
         return {
             "success": False,
-            "error": "Invalid or corrupted image file."
+            "error":
+                "Invalid or corrupted image file."
         }
 
     # =====================================================
@@ -478,13 +500,10 @@ async def predict(
     if not is_xray_like(image):
 
         return {
-
             "success": False,
-
             "error":
                 "This image does not appear to be a chest X-ray. "
                 "Please upload a valid chest X-ray image.",
-
             "error_type":
                 "INVALID_XRAY"
         }
@@ -502,9 +521,7 @@ async def predict(
     except Exception:
 
         return {
-
             "success": False,
-
             "error":
                 "Unable to process the uploaded image."
         }
@@ -515,21 +532,25 @@ async def predict(
 
     try:
 
-        prediction = model.predict(
+        prediction_result = model.predict(
             img_array,
+            batch_size=1,
             verbose=0
-        )[0][0]
+        )
 
         probability = float(
-            prediction
+            prediction_result[0][0]
         )
+
+        del prediction_result
+        del img_array
+
+        gc.collect()
 
     except Exception as e:
 
         return {
-
             "success": False,
-
             "error":
                 f"Model prediction failed: {str(e)}"
         }
@@ -553,7 +574,7 @@ async def predict(
     confidence = (
         probability
         if predicted_class == "PNEUMONIA"
-        else 1 - probability
+        else 1.0 - probability
     )
 
     # =====================================================
@@ -564,12 +585,14 @@ async def predict(
         uuid.uuid4()
     )
 
+    original_filename = os.path.basename(
+        file.filename or "uploaded_image.png"
+    )
+
     safe_filename = (
         request_id
         + "_"
-        + os.path.basename(
-            file.filename
-        )
+        + original_filename
     )
 
     # =====================================================
@@ -581,17 +604,26 @@ async def predict(
         safe_filename
     )
 
-    with open(
-        save_path,
-        "wb"
-    ) as f:
+    try:
 
-        f.write(
-            image_bytes
+        with open(
+            save_path,
+            "wb"
+        ) as f:
+
+            f.write(
+                image_bytes
+            )
+
+    except Exception as e:
+
+        print(
+            "Upload save error:",
+            e
         )
 
     # =====================================================
-    # GENERATE GRAD-CAM
+    # GRAD-CAM
     # =====================================================
 
     gradcam_filename = (
@@ -619,6 +651,11 @@ async def predict(
             "Grad-CAM error:",
             e
         )
+
+        gradcam_generated = False
+
+        # Make sure request-level garbage is released
+        gc.collect()
 
     # =====================================================
     # RESPONSE
@@ -668,5 +705,8 @@ async def predict(
         response["gradcam_image"] = (
             f"/gradcam/{gradcam_filename}"
         )
+
+    # Final cleanup
+    gc.collect()
 
     return response
